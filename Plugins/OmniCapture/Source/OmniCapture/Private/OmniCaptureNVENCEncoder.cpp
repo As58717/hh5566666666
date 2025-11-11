@@ -29,6 +29,7 @@ DEFINE_LOG_CATEGORY_STATIC(LogOmniCaptureNVENC, Log, All);
 #if OMNI_WITH_NVENC
 #include "RHICommandList.h"
 #include "RHIResources.h"
+#include "NVENC/NVENCDeviceUtilities.h"
 #if PLATFORM_WINDOWS
 #if OMNI_WITH_D3D11_RHI
 #include "D3D11RHI.h"
@@ -70,6 +71,7 @@ namespace
         FString P010FailureReason;
         FString BGRAFailureReason;
         FString HardwareFailureReason;
+        FString DriverVersion;
         TMap<ENVENCCodec, FNVENCCapabilities> CodecCapabilities;
     };
 
@@ -262,8 +264,29 @@ namespace
     }
 
 #if PLATFORM_WINDOWS && OMNI_WITH_D3D12_RHI
-    bool CreateProbeD3D12Device(TRefCountPtr<ID3D12Device>& OutDevice, FString& OutFailureReason)
+    bool CreateProbeD3D12Device(TRefCountPtr<ID3D12Device>& OutDevice, FString& OutFailureReason, FString* OutAdapterName = nullptr)
     {
+        DXGI_ADAPTER_DESC1 PreferredAdapterDesc = {};
+        TRefCountPtr<IDXGIAdapter1> PreferredAdapter;
+        if (TryGetNvidiaAdapter(PreferredAdapter, &PreferredAdapterDesc))
+        {
+            const HRESULT PreferredResult = D3D12CreateDevice(PreferredAdapter.GetReference(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
+            if (SUCCEEDED(PreferredResult))
+            {
+                const FString AdapterName = FString(PreferredAdapterDesc.Description);
+                if (OutAdapterName)
+                {
+                    *OutAdapterName = AdapterName;
+                }
+                UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D12 device initialised on adapter: %s"), *AdapterName);
+                return true;
+            }
+
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("Failed to create D3D12 device on NVIDIA adapter %s (0x%08x)."),
+                *FString(PreferredAdapterDesc.Description),
+                PreferredResult);
+        }
+
         TRefCountPtr<IDXGIFactory1> DxgiFactory;
         HRESULT Hr = CreateDXGIFactory1(IID_PPV_ARGS(DxgiFactory.GetInitReference()));
         if (FAILED(Hr))
@@ -300,6 +323,12 @@ namespace
             Hr = D3D12CreateDevice(Adapter.GetReference(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
             if (SUCCEEDED(Hr))
             {
+                const FString AdapterName = FString(AdapterDesc.Description);
+                if (OutAdapterName)
+                {
+                    *OutAdapterName = AdapterName;
+                }
+                UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D12 device initialised on adapter: %s"), *AdapterName);
                 return true;
             }
         }
@@ -311,6 +340,11 @@ namespace
             return false;
         }
 
+        if (OutAdapterName)
+        {
+            *OutAdapterName = TEXT("Default hardware adapter");
+        }
+        UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D12 device initialised using default hardware selection."));
         return true;
     }
 #endif // PLATFORM_WINDOWS && OMNI_WITH_D3D12_RHI
@@ -326,6 +360,7 @@ namespace
         ID3D11Device* Device = nullptr;
         TRefCountPtr<ID3D11Device> LocalDevice;
         TRefCountPtr<ID3D11DeviceContext> LocalContext;
+        FString ActiveAdapterName = TEXT("<unknown>");
 
 #if OMNI_WITH_D3D11_RHI
         const uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
@@ -336,12 +371,52 @@ namespace
             D3D_FEATURE_LEVEL_10_1,
             D3D_FEATURE_LEVEL_10_0
         };
-        HRESULT Hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, Flags, FeatureLevels, UE_ARRAY_COUNT(FeatureLevels), D3D11_SDK_VERSION, LocalDevice.GetInitReference(), nullptr, LocalContext.GetInitReference());
+        DXGI_ADAPTER_DESC1 PreferredDesc = {};
+        TRefCountPtr<IDXGIAdapter1> PreferredAdapter;
+        if (TryGetNvidiaAdapter(PreferredAdapter, &PreferredDesc))
+        {
+            ActiveAdapterName = FString(PreferredDesc.Description);
+        }
+        HRESULT Hr = D3D11CreateDevice(
+            PreferredAdapter.IsValid() ? PreferredAdapter.GetReference() : nullptr,
+            PreferredAdapter.IsValid() ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+            nullptr,
+            Flags,
+            FeatureLevels,
+            UE_ARRAY_COUNT(FeatureLevels),
+            D3D11_SDK_VERSION,
+            LocalDevice.GetInitReference(),
+            nullptr,
+            LocalContext.GetInitReference());
         if (FAILED(Hr))
         {
             OutFailureReason = FString::Printf(TEXT("Failed to create probing D3D11 device (0x%08x)."), Hr);
             return false;
         }
+
+        if (!PreferredAdapter.IsValid())
+        {
+            TRefCountPtr<IDXGIDevice> DxgiDevice;
+            if (SUCCEEDED(LocalDevice->QueryInterface(IID_PPV_ARGS(DxgiDevice.GetInitReference()))) && DxgiDevice.IsValid())
+            {
+                TRefCountPtr<IDXGIAdapter> ActiveAdapter;
+                if (SUCCEEDED(DxgiDevice->GetAdapter(ActiveAdapter.GetInitReference())) && ActiveAdapter.IsValid())
+                {
+                    DXGI_ADAPTER_DESC AdapterDesc;
+                    if (SUCCEEDED(ActiveAdapter->GetDesc(&AdapterDesc)))
+                    {
+                        ActiveAdapterName = FString(AdapterDesc.Description);
+                    }
+                }
+            }
+
+            if (ActiveAdapterName == TEXT("<unknown>"))
+            {
+                ActiveAdapterName = TEXT("Default hardware adapter");
+            }
+        }
+
+        UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D11 device initialised on adapter: %s"), *ActiveAdapterName);
 #elif OMNI_WITH_D3D12_RHI
         const D3D_FEATURE_LEVEL FeatureLevels[] =
         {
@@ -352,7 +427,7 @@ namespace
         };
 
         TRefCountPtr<ID3D12Device> D3D12Device;
-        if (!CreateProbeD3D12Device(D3D12Device, OutFailureReason))
+        if (!CreateProbeD3D12Device(D3D12Device, OutFailureReason, &ActiveAdapterName))
         {
             return false;
         }
@@ -389,6 +464,15 @@ namespace
             OutFailureReason = FString::Printf(TEXT("D3D11On12CreateDevice failed during NVENC probe (0x%08x)."), Hr);
             return false;
         }
+
+        if (ActiveAdapterName == TEXT("<unknown>"))
+        {
+            UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D11-on-12 bridge initialised."));
+        }
+        else
+        {
+            UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D11-on-12 bridge initialised on adapter: %s"), *ActiveAdapterName);
+        }
 #endif // OMNI_WITH_D3D11_RHI
 
         Device = LocalDevice.GetReference();
@@ -400,6 +484,8 @@ namespace
             OutFailureReason = SessionError.IsEmpty() ? TEXT("Unable to open NVENC session for probe.") : SessionError;
             return false;
         }
+
+        UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ Opened encode session using adapter: %s"), *ActiveAdapterName);
 
         FNVENCParameters Parameters;
         Parameters.Codec = Codec;
@@ -420,6 +506,8 @@ namespace
             Session.Destroy();
             return false;
         }
+
+        UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ Session initialisation completed."));
 
         FNVENCBitstream Bitstream;
         if (!Bitstream.Initialize(Session.GetEncoderHandle(), Session.GetFunctionList(), Session.GetApiVersion()))
@@ -444,6 +532,16 @@ namespace
         ApplyRuntimeOverrides();
 
         FNVENCHardwareProbeResult Result;
+
+        Result.DriverVersion = QueryNvidiaDriverVersion();
+        if (!Result.DriverVersion.IsEmpty())
+        {
+            UE_LOG(LogOmniCaptureNVENC, Display, TEXT("NVENC probe ✓ NVIDIA driver version: %s"), *Result.DriverVersion);
+        }
+        else
+        {
+            UE_LOG(LogOmniCaptureNVENC, Verbose, TEXT("NVENC probe could not determine NVIDIA driver version via NVML."));
+        }
 
         const FString RuntimeOverride = ResolveRuntimeDirectoryOverride();
         const FString BundledRuntime = FindBundledRuntimeDirectory();
@@ -657,12 +755,19 @@ FOmniNVENCCapabilities FOmniCaptureNVENCEncoder::QueryCapabilities()
     {
         DeviceDescription = Caps.AdapterName;
     }
-    const FGPUDriverInfo DriverInfo = FPlatformMisc::GetGPUDriverInfo(DeviceDescription);
+    if (!Probe.DriverVersion.IsEmpty())
+    {
+        Caps.DriverVersion = Probe.DriverVersion;
+    }
+    else
+    {
+        const FGPUDriverInfo DriverInfo = FPlatformMisc::GetGPUDriverInfo(DeviceDescription);
 #if UE_VERSION_NEWER_THAN(5, 5, 0)
-    Caps.DriverVersion = DriverInfo.UserDriverVersion;
+        Caps.DriverVersion = DriverInfo.UserDriverVersion;
 #else
-    Caps.DriverVersion = DriverInfo.DriverVersion;
+        Caps.DriverVersion = DriverInfo.DriverVersion;
 #endif
+    }
 #endif
 
     return Caps;
