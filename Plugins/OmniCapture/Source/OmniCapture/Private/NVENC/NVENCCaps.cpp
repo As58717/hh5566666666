@@ -173,7 +173,7 @@ namespace OmniNVENC
 
 #if OMNI_WITH_D3D11_RHI
             {
-                const UINT DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+                const UINT DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
                 const D3D_FEATURE_LEVEL FeatureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
                 D3D_FEATURE_LEVEL CreatedLevel = D3D_FEATURE_LEVEL_11_0;
 
@@ -202,7 +202,19 @@ namespace OmniNVENC
                     Device = nullptr;
                     Context = nullptr;
                 }
-                else if (!PreferredAdapter.IsValid())
+                else
+                {
+                    TRefCountPtr<ID3D11VideoDevice> VideoDevice;
+                    const HRESULT VideoResult = Device->QueryInterface(IID_PPV_ARGS(VideoDevice.GetInitReference()));
+                    if (FAILED(VideoResult) || !VideoDevice.IsValid())
+                    {
+                        UE_LOG(LogNVENCCaps, Warning, TEXT("Temporary D3D11 device for NVENC caps is missing ID3D11VideoDevice interface (0x%08x)."), VideoResult);
+                        Device = nullptr;
+                        Context = nullptr;
+                    }
+                }
+
+                if (Device.IsValid() && !PreferredAdapter.IsValid())
                 {
                     TRefCountPtr<IDXGIDevice> DxgiDevice;
                     if (SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(DxgiDevice.GetInitReference()))) && DxgiDevice.IsValid())
@@ -268,7 +280,7 @@ namespace OmniNVENC
 
                 HRESULT BridgeResult = D3D11On12CreateDevice(
                     D3D12Device.GetReference(),
-                    D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                    D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
                     FeatureLevels,
                     UE_ARRAY_COUNT(FeatureLevels),
                     reinterpret_cast<IUnknown**>(CommandQueues),
@@ -281,6 +293,14 @@ namespace OmniNVENC
                 if (FAILED(BridgeResult))
                 {
                     UE_LOG(LogNVENCCaps, Warning, TEXT("D3D11On12CreateDevice failed during NVENC capability query (0x%08x)."), BridgeResult);
+                    return false;
+                }
+
+                TRefCountPtr<ID3D11VideoDevice> VideoDevice;
+                const HRESULT VideoResult = Device->QueryInterface(IID_PPV_ARGS(VideoDevice.GetInitReference()));
+                if (FAILED(VideoResult) || !VideoDevice.IsValid())
+                {
+                    UE_LOG(LogNVENCCaps, Warning, TEXT("D3D11-on-12 bridge device for NVENC caps is missing ID3D11VideoDevice interface (0x%08x)."), VideoResult);
                     return false;
                 }
             }
@@ -296,6 +316,14 @@ namespace OmniNVENC
             if (!Session.Open(Codec, Device.GetReference(), NV_ENC_DEVICE_TYPE_DIRECTX))
             {
                 UE_LOG(LogNVENCCaps, Warning, TEXT("NVENC capability query failed – unable to open session for %s."), *FNVENCDefs::CodecToString(Codec));
+                return false;
+            }
+
+            if (!Session.ValidatePresetConfiguration(Codec))
+            {
+                const FString SessionError = Session.GetLastError();
+                UE_LOG(LogNVENCCaps, Warning, TEXT("NVENC capability query failed – preset validation unsuccessful for %s: %s"),
+                    *FNVENCDefs::CodecToString(Codec), SessionError.IsEmpty() ? TEXT("unknown error") : *SessionError);
                 return false;
             }
 
