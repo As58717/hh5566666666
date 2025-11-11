@@ -5,6 +5,7 @@
 #if WITH_OMNI_NVENC
 
 #include "NVENC/NVENCPlatform.h"
+#include "NVENC/NVENCDeviceUtilities.h"
 #include "NVENC/NVEncodeAPILoader.h"
 #include "NVENC/NVENCDefs.h"
 #include "NVENC/NVENCSession.h"
@@ -37,6 +38,22 @@ namespace OmniNVENC
     {
         bool CreateProbeD3D12Device(TRefCountPtr<ID3D12Device>& OutDevice)
         {
+            DXGI_ADAPTER_DESC1 PreferredAdapterDesc = {};
+            TRefCountPtr<IDXGIAdapter1> PreferredAdapter;
+            if (TryGetNvidiaAdapter(PreferredAdapter, &PreferredAdapterDesc))
+            {
+                const HRESULT PreferredResult = D3D12CreateDevice(PreferredAdapter.GetReference(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
+                if (SUCCEEDED(PreferredResult))
+                {
+                    UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps probe using NVIDIA adapter: %s"), *FString(PreferredAdapterDesc.Description));
+                    return true;
+                }
+
+                UE_LOG(LogNVENCCaps, Warning, TEXT("Failed to create D3D12 device on NVIDIA adapter %s (0x%08x)."),
+                    *FString(PreferredAdapterDesc.Description),
+                    PreferredResult);
+            }
+
             TRefCountPtr<IDXGIFactory1> DxgiFactory;
             HRESULT Hr = CreateDXGIFactory1(IID_PPV_ARGS(DxgiFactory.GetInitReference()));
             if (FAILED(Hr))
@@ -73,6 +90,7 @@ namespace OmniNVENC
                 Hr = D3D12CreateDevice(Adapter.GetReference(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(OutDevice.GetInitReference()));
                 if (SUCCEEDED(Hr))
                 {
+                    UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps probe using adapter: %s"), *FString(AdapterDesc.Description));
                     return true;
                 }
             }
@@ -84,6 +102,7 @@ namespace OmniNVENC
                 return false;
             }
 
+            UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps probe using default hardware adapter."));
             return true;
         }
     }
@@ -158,9 +177,16 @@ namespace OmniNVENC
                 const D3D_FEATURE_LEVEL FeatureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
                 D3D_FEATURE_LEVEL CreatedLevel = D3D_FEATURE_LEVEL_11_0;
 
+                DXGI_ADAPTER_DESC1 PreferredDesc = {};
+                TRefCountPtr<IDXGIAdapter1> PreferredAdapter;
+                if (TryGetNvidiaAdapter(PreferredAdapter, &PreferredDesc))
+                {
+                    UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps D3D11 probe using NVIDIA adapter: %s"), *FString(PreferredDesc.Description));
+                }
+
                 HRESULT CreateDeviceResult = D3D11CreateDevice(
-                    nullptr,
-                    D3D_DRIVER_TYPE_HARDWARE,
+                    PreferredAdapter.IsValid() ? PreferredAdapter.GetReference() : nullptr,
+                    PreferredAdapter.IsValid() ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
                     nullptr,
                     DeviceFlags,
                     FeatureLevels,
@@ -175,6 +201,34 @@ namespace OmniNVENC
                     UE_LOG(LogNVENCCaps, Verbose, TEXT("Temporary D3D11 device creation for NVENC caps failed (0x%08x)."), CreateDeviceResult);
                     Device = nullptr;
                     Context = nullptr;
+                }
+                else if (!PreferredAdapter.IsValid())
+                {
+                    TRefCountPtr<IDXGIDevice> DxgiDevice;
+                    if (SUCCEEDED(Device->QueryInterface(IID_PPV_ARGS(DxgiDevice.GetInitReference()))) && DxgiDevice.IsValid())
+                    {
+                        TRefCountPtr<IDXGIAdapter> ActiveAdapter;
+                        if (SUCCEEDED(DxgiDevice->GetAdapter(ActiveAdapter.GetInitReference())) && ActiveAdapter.IsValid())
+                        {
+                            DXGI_ADAPTER_DESC AdapterDesc;
+                            if (SUCCEEDED(ActiveAdapter->GetDesc(&AdapterDesc)))
+                            {
+                                UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps D3D11 probe used adapter: %s"), *FString(AdapterDesc.Description));
+                            }
+                            else
+                            {
+                                UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps D3D11 probe used default hardware adapter (descriptor query failed)."));
+                            }
+                        }
+                        else
+                        {
+                            UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps D3D11 probe used default hardware adapter (IDXGIAdapter unavailable)."));
+                        }
+                    }
+                    else
+                    {
+                        UE_LOG(LogNVENCCaps, Verbose, TEXT("NVENC caps D3D11 probe used default hardware adapter."));
+                    }
                 }
             }
 #endif // OMNI_WITH_D3D11_RHI

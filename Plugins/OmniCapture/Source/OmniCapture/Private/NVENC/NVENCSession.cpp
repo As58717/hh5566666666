@@ -383,6 +383,8 @@ namespace OmniNVENC
         AddCandidate(ToWindowsGuid(FNVENCDefs::PresetP6Guid()), NV_ENC_TUNING_INFO_HIGH_QUALITY, TEXT("NV_ENC_PRESET_P6"));
         AddCandidate(ToWindowsGuid(FNVENCDefs::PresetP7Guid()), NV_ENC_TUNING_INFO_LOSSLESS, TEXT("NV_ENC_PRESET_P7"));
 
+        uint32 RuntimePresetCount = 0;
+
         if (GetPresetGUIDs)
         {
             uint32 AvailablePresetCount = 0;
@@ -396,6 +398,7 @@ namespace OmniNVENC
                 if (EnumStatus == NV_ENC_SUCCESS)
                 {
                     RuntimePresets.SetNum(AvailablePresetCount);
+                    RuntimePresetCount = AvailablePresetCount;
                     for (const GUID& RuntimeGuid : RuntimePresets)
                     {
                         const FString FriendlyName = FNVENCDefs::PresetGuidToString(FromWindowsGuid(RuntimeGuid));
@@ -403,6 +406,11 @@ namespace OmniNVENC
                     }
                 }
             }
+        }
+
+        if (RuntimePresetCount > 0)
+        {
+            UE_LOG(LogNVENCSession, Log, TEXT("NVENC session ✓ Queried %u encode preset GUIDs."), RuntimePresetCount);
         }
 
         NV_ENC_PRESET_CONFIG PresetConfig = {};
@@ -508,6 +516,8 @@ namespace OmniNVENC
             ? FNVENCDefs::PresetGuidToString(FromWindowsGuid(SelectedPreset.Guid))
             : SelectedPreset.Description;
 
+        UE_LOG(LogNVENCSession, Log, TEXT("NVENC session ✓ Selected preset configuration: %s"), *SelectedPresetName);
+
         if (SelectedPresetIndex > 0)
         {
             UE_LOG(LogNVENCSession, Log, TEXT("Using fallback NVENC preset %s after trying %d options."), *SelectedPresetName, SelectedPresetIndex + 1);
@@ -604,7 +614,7 @@ namespace OmniNVENC
 
         CurrentParameters = Parameters;
         bIsInitialised = true;
-        UE_LOG(LogNVENCSession, Verbose, TEXT("NVENC session initialised: %s"), *FNVENCParameterMapper::ToDebugString(CurrentParameters));
+        UE_LOG(LogNVENCSession, Log, TEXT("NVENC session ✓ Encoder initialised: %s"), *FNVENCParameterMapper::ToDebugString(CurrentParameters));
         return true;
 #endif
     }
