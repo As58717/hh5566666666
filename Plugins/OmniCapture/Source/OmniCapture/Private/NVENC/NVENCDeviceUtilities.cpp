@@ -37,7 +37,7 @@ namespace OmniNVENC
 
     bool TryGetNvidiaAdapter(TRefCountPtr<IDXGIAdapter1>& OutAdapter, DXGI_ADAPTER_DESC1* OutDesc)
     {
-        OutAdapter.Reset();
+        OutAdapter = nullptr;
 
         TRefCountPtr<IDXGIFactory1> DxgiFactory;
         HRESULT Hr = CreateDXGIFactory1(IID_PPV_ARGS(DxgiFactory.GetInitReference()));
