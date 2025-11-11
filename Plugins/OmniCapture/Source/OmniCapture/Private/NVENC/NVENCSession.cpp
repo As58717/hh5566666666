@@ -196,6 +196,7 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
         }
 
         ApiVersion = NVENCAPI_VERSION;
+        const uint32 CompileTimeApiVersion = ApiVersion;
         FNVENCAPIVersion NegotiatedVersion = FNVENCDefs::DecodeApiVersion(ApiVersion);
 
         using TNvEncodeAPIGetMaxSupportedVersion = NVENCSTATUS(NVENCAPI*)(uint32_t*);
@@ -214,21 +215,23 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
                     const FNVENCAPIVersion RuntimeVersion = FNVENCDefs::DecodeRuntimeVersion(RuntimeApiVersionRaw);
                     if (RuntimeVersion.Major != 0 || RuntimeVersion.Minor != 0)
                     {
+                        const uint32 RuntimeApiVersion = FNVENCDefs::EncodeApiVersion(RuntimeVersion);
                         if (FNVENCDefs::IsVersionOlder(RuntimeVersion, NegotiatedVersion))
                         {
                             UE_LOG(LogNVENCSession, Log,
                                 TEXT("NVENC runtime API version %s (0x%08x) is lower than compile-time version %s (0x%08x). Downgrading."),
-                                *FNVENCDefs::VersionToString(RuntimeVersion), RuntimeApiVersionRaw,
-                                *FNVENCDefs::VersionToString(NegotiatedVersion), ApiVersion);
+                                *FNVENCDefs::VersionToString(RuntimeVersion), RuntimeApiVersion,
+                                *FNVENCDefs::VersionToString(NegotiatedVersion), CompileTimeApiVersion);
                             NegotiatedVersion = RuntimeVersion;
-                            ApiVersion = FNVENCDefs::EncodeApiVersion(NegotiatedVersion);
+                            ApiVersion = RuntimeApiVersion;
+                            UE_LOG(LogNVENCSession, Display, TEXT("\u2192 Adjusted apiVersion to runtime version: 0x%08x"), ApiVersion);
                         }
                         else if (FNVENCDefs::IsVersionOlder(NegotiatedVersion, RuntimeVersion))
                         {
                             UE_LOG(LogNVENCSession, Verbose,
                                 TEXT("NVENC runtime reports newer API version %s (0x%08x); using compile-time version %s (0x%08x)."),
-                                *FNVENCDefs::VersionToString(RuntimeVersion), RuntimeApiVersionRaw,
-                                *FNVENCDefs::VersionToString(NegotiatedVersion), ApiVersion);
+                                *FNVENCDefs::VersionToString(RuntimeVersion), RuntimeApiVersion,
+                                *FNVENCDefs::VersionToString(NegotiatedVersion), CompileTimeApiVersion);
                         }
                     }
                 }
@@ -304,11 +307,18 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
         CurrentParameters.Codec = Codec;
         bIsOpen = true;
         LastErrorMessage.Reset();
+
+        if (!ValidatePresetConfiguration(Codec, /*bAllowNullFallback=*/false))
+        {
+            UE_LOG(LogNVENCSession, Error, TEXT("NVENC session preset validation failed immediately after opening. Closing session."));
+            Destroy();
+            return false;
+        }
         return true;
 #endif
     }
 
-    bool FNVENCSession::ValidatePresetConfiguration(ENVENCCodec Codec)
+    bool FNVENCSession::ValidatePresetConfiguration(ENVENCCodec Codec, bool bAllowNullFallback)
     {
         LastErrorMessage.Reset();
 #if !PLATFORM_WINDOWS
@@ -370,7 +380,7 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
         };
 
         NVENCSTATUS Status = QueryPreset(Encoder);
-        if (Status != NV_ENC_SUCCESS && (Status == NV_ENC_ERR_INVALID_PARAM || Status == NV_ENC_ERR_INVALID_ENCODERDEVICE))
+        if (Status != NV_ENC_SUCCESS && bAllowNullFallback && (Status == NV_ENC_ERR_INVALID_PARAM || Status == NV_ENC_ERR_INVALID_ENCODERDEVICE))
         {
             Status = QueryPreset(nullptr);
         }

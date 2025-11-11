@@ -252,6 +252,16 @@ namespace OmniNVENC
 
     FNVENCAPIVersion FNVENCDefs::DecodeRuntimeVersion(uint32 RuntimeVersion)
     {
+        if (RuntimeVersion == 0u)
+        {
+            return FNVENCAPIVersion();
+        }
+
+        if (RuntimeVersion > 0x0FFFu)
+        {
+            return DecodeApiVersion(RuntimeVersion);
+        }
+
         FNVENCAPIVersion Version;
         Version.Major = (RuntimeVersion >> 4) & 0x0FFFu;
         Version.Minor = RuntimeVersion & 0x0Fu;
