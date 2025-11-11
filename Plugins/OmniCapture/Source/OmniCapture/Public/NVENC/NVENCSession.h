@@ -30,6 +30,7 @@ namespace OmniNVENC
 
         bool Open(ENVENCCodec Codec, void* InDevice = nullptr, NV_ENC_DEVICE_TYPE InDeviceType = NV_ENC_DEVICE_TYPE_DIRECTX);
         bool Initialize(const FNVENCParameters& Parameters);
+        bool ValidatePresetConfiguration(ENVENCCodec Codec);
         bool Reconfigure(const FNVENCParameters& Parameters);
         void Flush();
         void Destroy();

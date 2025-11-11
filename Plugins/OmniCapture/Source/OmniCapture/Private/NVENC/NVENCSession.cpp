@@ -167,7 +167,7 @@ namespace OmniNVENC
 #endif
     }
 
-    bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE InDeviceType)
+bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE InDeviceType)
     {
         LastErrorMessage.Reset();
 #if !PLATFORM_WINDOWS
@@ -304,6 +304,93 @@ namespace OmniNVENC
         CurrentParameters.Codec = Codec;
         bIsOpen = true;
         LastErrorMessage.Reset();
+        return true;
+#endif
+    }
+
+    bool FNVENCSession::ValidatePresetConfiguration(ENVENCCodec Codec)
+    {
+        LastErrorMessage.Reset();
+#if !PLATFORM_WINDOWS
+        UE_LOG(LogNVENCSession, Warning, TEXT("Cannot validate NVENC preset configuration on this platform."));
+        LastErrorMessage = TEXT("Cannot validate NVENC preset configuration on this platform.");
+        return false;
+#else
+        if (!bIsOpen || !Encoder)
+        {
+            UE_LOG(LogNVENCSession, Warning, TEXT("Cannot validate NVENC preset configuration – encoder is not open."));
+            LastErrorMessage = TEXT("Cannot validate NVENC preset configuration – encoder is not open.");
+            return false;
+        }
+
+        using TNvEncGetEncodePresetConfig = NVENCSTATUS(NVENCAPI*)(void*, GUID, GUID, NV_ENC_PRESET_CONFIG*);
+        using TNvEncGetEncodePresetConfigEx = NVENCSTATUS(NVENCAPI*)(void*, GUID, GUID, NV_ENC_TUNING_INFO, NV_ENC_PRESET_CONFIG*);
+
+        TNvEncGetEncodePresetConfig GetPresetConfig = FunctionList.nvEncGetEncodePresetConfig;
+        TNvEncGetEncodePresetConfigEx GetPresetConfigEx = reinterpret_cast<TNvEncGetEncodePresetConfigEx>(FunctionList.nvEncGetEncodePresetConfigEx);
+
+        if (!ValidateFunction("NvEncGetEncodePresetConfig", GetPresetConfig))
+        {
+            LastErrorMessage = TEXT("Required NVENC export 'NvEncGetEncodePresetConfig' is missing.");
+            return false;
+        }
+
+        const GUID CodecGuid = ToWindowsGuid(FNVENCDefs::CodecGuid(Codec));
+        const GUID PresetGuid = ToWindowsGuid(FNVENCDefs::PresetLowLatencyHighQualityGuid());
+
+        auto QueryPreset = [&](void* InEncoderHandle) -> NVENCSTATUS
+        {
+            NV_ENC_PRESET_CONFIG PresetConfig = {};
+            PresetConfig.version = FNVENCDefs::PatchStructVersion(NV_ENC_PRESET_CONFIG_VER, ApiVersion);
+            PresetConfig.presetCfg.version = FNVENCDefs::PatchStructVersion(NV_ENC_CONFIG_VER, ApiVersion);
+
+            NVENCSTATUS Status = GetPresetConfig(InEncoderHandle, CodecGuid, PresetGuid, &PresetConfig);
+            if (Status != NV_ENC_SUCCESS && GetPresetConfigEx)
+            {
+                const NV_ENC_TUNING_INFO TuningAttempts[] =
+                {
+                    NV_ENC_TUNING_INFO_LOW_LATENCY,
+                    NV_ENC_TUNING_INFO_HIGH_QUALITY,
+                    NV_ENC_TUNING_INFO_UNDEFINED,
+                    NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+                    NV_ENC_TUNING_INFO_LOSSLESS,
+                };
+
+                for (NV_ENC_TUNING_INFO Tuning : TuningAttempts)
+                {
+                    Status = GetPresetConfigEx(InEncoderHandle, CodecGuid, PresetGuid, Tuning, &PresetConfig);
+                    if (Status == NV_ENC_SUCCESS)
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return Status;
+        };
+
+        NVENCSTATUS Status = QueryPreset(Encoder);
+        if (Status != NV_ENC_SUCCESS && (Status == NV_ENC_ERR_INVALID_PARAM || Status == NV_ENC_ERR_INVALID_ENCODERDEVICE))
+        {
+            Status = QueryPreset(nullptr);
+        }
+
+        if (Status != NV_ENC_SUCCESS)
+        {
+            const FString StatusString = FNVENCDefs::StatusToString(Status);
+            if (Status == NV_ENC_ERR_INVALID_ENCODERDEVICE)
+            {
+                LastErrorMessage = FString::Printf(TEXT("NVENC runtime rejected the provided DirectX device (NV_ENC_ERR_INVALID_ENCODERDEVICE). (%s)"), *StatusString);
+            }
+            else
+            {
+                LastErrorMessage = FString::Printf(TEXT("NvEncGetEncodePresetConfig validation failed: %s"), *StatusString);
+            }
+
+            UE_LOG(LogNVENCSession, Warning, TEXT("NvEncGetEncodePresetConfig validation failed for NV_ENC_PRESET_LOW_LATENCY_HQ preset: %s"), *StatusString);
+            return false;
+        }
+
         return true;
 #endif
     }

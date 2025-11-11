@@ -95,7 +95,7 @@ namespace OmniNVENC
         ID3D12CommandQueue* CommandQueues[] = { CommandQueue.GetReference() };
 
         const D3D_FEATURE_LEVEL FeatureLevels[] = { D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0 };
-        UINT DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        UINT DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
 
         HRESULT BridgeResult = D3D11On12CreateDevice(
             InDevice,
@@ -112,6 +112,14 @@ namespace OmniNVENC
         if (FAILED(BridgeResult))
         {
             UE_LOG(LogNVENCInputD3D12, Error, TEXT("D3D11On12CreateDevice failed (0x%08x)."), BridgeResult);
+            return false;
+        }
+
+        TRefCountPtr<ID3D11VideoDevice> VideoDevice;
+        const HRESULT VideoResult = D3D11Device->QueryInterface(IID_PPV_ARGS(VideoDevice.GetInitReference()));
+        if (FAILED(VideoResult) || !VideoDevice.IsValid())
+        {
+            UE_LOG(LogNVENCInputD3D12, Error, TEXT("D3D11-on-12 bridge is missing ID3D11VideoDevice interface (0x%08x)."), VideoResult);
             return false;
         }
 

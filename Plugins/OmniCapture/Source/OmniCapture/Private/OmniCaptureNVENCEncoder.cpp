@@ -363,7 +363,7 @@ namespace
         FString ActiveAdapterName = TEXT("<unknown>");
 
 #if OMNI_WITH_D3D11_RHI
-        const uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
+        const uint32 Flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT;
         const D3D_FEATURE_LEVEL FeatureLevels[] =
         {
             D3D_FEATURE_LEVEL_11_1,
@@ -416,6 +416,15 @@ namespace
             }
         }
 
+        TRefCountPtr<ID3D11VideoDevice> VideoDevice;
+        const HRESULT VideoHr = LocalDevice->QueryInterface(IID_PPV_ARGS(VideoDevice.GetInitReference()));
+        if (FAILED(VideoHr) || !VideoDevice.IsValid())
+        {
+            OutFailureReason = FString::Printf(TEXT("D3D11 device does not expose ID3D11VideoDevice (0x%08x)."), VideoHr);
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC probe ✗ D3D11 device missing ID3D11VideoDevice interface (0x%08x)."), VideoHr);
+            return false;
+        }
+
         UE_LOG(LogOmniCaptureNVENC, Log, TEXT("NVENC probe ✓ D3D11 device initialised on adapter: %s"), *ActiveAdapterName);
 #elif OMNI_WITH_D3D12_RHI
         const D3D_FEATURE_LEVEL FeatureLevels[] =
@@ -449,7 +458,7 @@ namespace
 
         Hr = D3D11On12CreateDevice(
             D3D12Device.GetReference(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
             FeatureLevels,
             UE_ARRAY_COUNT(FeatureLevels),
             reinterpret_cast<IUnknown**>(CommandQueues),
@@ -462,6 +471,15 @@ namespace
         if (FAILED(Hr))
         {
             OutFailureReason = FString::Printf(TEXT("D3D11On12CreateDevice failed during NVENC probe (0x%08x)."), Hr);
+            return false;
+        }
+
+        TRefCountPtr<ID3D11VideoDevice> VideoDevice;
+        const HRESULT VideoHr = LocalDevice->QueryInterface(IID_PPV_ARGS(VideoDevice.GetInitReference()));
+        if (FAILED(VideoHr) || !VideoDevice.IsValid())
+        {
+            OutFailureReason = FString::Printf(TEXT("D3D11-on-12 bridge device does not expose ID3D11VideoDevice (0x%08x)."), VideoHr);
+            UE_LOG(LogOmniCaptureNVENC, Warning, TEXT("NVENC probe ✗ D3D11-on-12 bridge missing ID3D11VideoDevice interface (0x%08x)."), VideoHr);
             return false;
         }
 
@@ -482,6 +500,14 @@ namespace
         {
             const FString SessionError = Session.GetLastError();
             OutFailureReason = SessionError.IsEmpty() ? TEXT("Unable to open NVENC session for probe.") : SessionError;
+            return false;
+        }
+
+        if (!Session.ValidatePresetConfiguration(Codec))
+        {
+            const FString SessionError = Session.GetLastError();
+            OutFailureReason = SessionError.IsEmpty() ? TEXT("Failed to validate NVENC preset configuration during probe.") : SessionError;
+            Session.Destroy();
             return false;
         }
 
@@ -1096,6 +1122,16 @@ bool FOmniCaptureNVENCEncoder::EncodeFrameD3D11(const FOmniCaptureFrame& Frame)
             return false;
         }
 
+        if (!EncoderSession.ValidatePresetConfiguration(ActiveParameters.Codec))
+        {
+            LastErrorMessage = EncoderSession.GetLastError().IsEmpty()
+                ? TEXT("Failed to validate NVENC preset configuration.")
+                : EncoderSession.GetLastError();
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *LastErrorMessage);
+            EncoderSession.Destroy();
+            return false;
+        }
+
         if (!EncoderSession.Initialize(ActiveParameters))
         {
             LastErrorMessage = TEXT("Failed to initialise NVENC session.");
@@ -1271,6 +1307,16 @@ bool FOmniCaptureNVENCEncoder::EncodeFrameD3D12(const FOmniCaptureFrame& Frame)
         {
             LastErrorMessage = TEXT("Failed to open NVENC session.");
             UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *LastErrorMessage);
+            return false;
+        }
+
+        if (!EncoderSession.ValidatePresetConfiguration(ActiveParameters.Codec))
+        {
+            LastErrorMessage = EncoderSession.GetLastError().IsEmpty()
+                ? TEXT("Failed to validate NVENC preset configuration.")
+                : EncoderSession.GetLastError();
+            UE_LOG(LogOmniCaptureNVENC, Error, TEXT("%s"), *LastErrorMessage);
+            EncoderSession.Destroy();
             return false;
         }
 
