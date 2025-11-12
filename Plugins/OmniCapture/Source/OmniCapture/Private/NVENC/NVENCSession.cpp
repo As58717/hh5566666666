@@ -29,6 +29,34 @@ namespace OmniNVENC
     namespace
     {
 #if PLATFORM_WINDOWS
+        constexpr NV_ENC_DEVICE_TYPE GetDirectX11DeviceType()
+        {
+#if defined(NV_ENC_DEVICE_TYPE_DIRECTX11)
+            return NV_ENC_DEVICE_TYPE_DIRECTX11;
+#else
+            return static_cast<NV_ENC_DEVICE_TYPE>(0x3);
+#endif
+        }
+
+        FString DeviceTypeToString(NV_ENC_DEVICE_TYPE Type)
+        {
+            switch (Type)
+            {
+            case NV_ENC_DEVICE_TYPE_DIRECTX:
+                return TEXT("DirectX");
+            case NV_ENC_DEVICE_TYPE_CUDA:
+                return TEXT("CUDA");
+            case NV_ENC_DEVICE_TYPE_OPENGL:
+                return TEXT("OpenGL");
+            default:
+                if (Type == GetDirectX11DeviceType())
+                {
+                    return TEXT("DirectX11");
+                }
+                return FString::Printf(TEXT("0x%x"), static_cast<uint32>(Type));
+            }
+        }
+
         GUID ToWindowsGuid(const FGuid& InGuid)
         {
             GUID Guid;
@@ -291,19 +319,82 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
         OpenParams.version = FNVENCDefs::PatchStructVersion(NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, ApiVersion);
         OpenParams.apiVersion = ApiVersion;
         OpenParams.device = InDevice;
-        OpenParams.deviceType = InDeviceType;
 
-        Status = OpenSession(&OpenParams, &Encoder);
-        if (Status != NV_ENC_SUCCESS)
+        NV_ENC_DEVICE_TYPE SelectedDeviceType = InDeviceType;
+        auto TryAddCandidate = [](NV_ENC_DEVICE_TYPE* Candidates, int32& Count, NV_ENC_DEVICE_TYPE Candidate)
+        {
+            for (int32 Index = 0; Index < Count; ++Index)
+            {
+                if (Candidates[Index] == Candidate)
+                {
+                    return;
+                }
+            }
+
+            if (Count < 4)
+            {
+                Candidates[Count++] = Candidate;
+            }
+        };
+
+        NV_ENC_DEVICE_TYPE CandidateTypes[4] = {};
+        int32 CandidateCount = 0;
+        TryAddCandidate(CandidateTypes, CandidateCount, InDeviceType);
+#if PLATFORM_WINDOWS
+        if (InDeviceType == NV_ENC_DEVICE_TYPE_DIRECTX)
+        {
+            TryAddCandidate(CandidateTypes, CandidateCount, GetDirectX11DeviceType());
+            TryAddCandidate(CandidateTypes, CandidateCount, NV_ENC_DEVICE_TYPE_DIRECTX);
+        }
+        else if (InDeviceType == GetDirectX11DeviceType())
+        {
+            TryAddCandidate(CandidateTypes, CandidateCount, NV_ENC_DEVICE_TYPE_DIRECTX);
+        }
+#endif
+
+        Status = NV_ENC_ERR_INVALID_PARAM;
+        Encoder = nullptr;
+
+        for (int32 CandidateIndex = 0; CandidateIndex < CandidateCount; ++CandidateIndex)
+        {
+            const NV_ENC_DEVICE_TYPE Candidate = CandidateTypes[CandidateIndex];
+            OpenParams.deviceType = Candidate;
+
+            void* CandidateEncoder = nullptr;
+            Status = OpenSession(&OpenParams, &CandidateEncoder);
+            if (Status == NV_ENC_SUCCESS)
+            {
+                Encoder = CandidateEncoder;
+                SelectedDeviceType = Candidate;
+                if (CandidateIndex > 0)
+                {
+#if PLATFORM_WINDOWS
+                    UE_LOG(LogNVENCSession, Display, TEXT("NvEncOpenEncodeSessionEx succeeded after retrying with device type %s."),
+                        *DeviceTypeToString(Candidate));
+#else
+                    UE_LOG(LogNVENCSession, Display, TEXT("NvEncOpenEncodeSessionEx succeeded after retry."));
+#endif
+                }
+                break;
+            }
+
+#if PLATFORM_WINDOWS
+            UE_LOG(LogNVENCSession, Verbose, TEXT("NvEncOpenEncodeSessionEx failed with device type %s: %s"),
+                *DeviceTypeToString(Candidate), *FNVENCDefs::StatusToString(Status));
+#else
+            UE_LOG(LogNVENCSession, Verbose, TEXT("NvEncOpenEncodeSessionEx failed (status=%s)."), *FNVENCDefs::StatusToString(Status));
+#endif
+        }
+
+        if (!Encoder)
         {
             UE_LOG(LogNVENCSession, Error, TEXT("NvEncOpenEncodeSessionEx failed: %s"), *FNVENCDefs::StatusToString(Status));
-            Encoder = nullptr;
             LastErrorMessage = FString::Printf(TEXT("NvEncOpenEncodeSessionEx failed: %s"), *FNVENCDefs::StatusToString(Status));
             return false;
         }
 
         Device = InDevice;
-        DeviceType = InDeviceType;
+        DeviceType = SelectedDeviceType;
         CurrentParameters.Codec = Codec;
         bIsOpen = true;
         LastErrorMessage.Reset();
