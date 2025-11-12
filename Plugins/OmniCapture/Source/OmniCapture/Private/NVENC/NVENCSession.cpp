@@ -388,6 +388,16 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
         if (Status != NV_ENC_SUCCESS)
         {
             const FString StatusString = FNVENCDefs::StatusToString(Status);
+
+            if (Status == NV_ENC_ERR_INVALID_PARAM)
+            {
+                UE_LOG(LogNVENCSession, Warning,
+                    TEXT("NVENC preset NV_ENC_PRESET_LOW_LATENCY_HQ unavailable (%s). Will attempt alternate presets during initialisation."),
+                    *StatusString);
+                LastErrorMessage.Reset();
+                return true;
+            }
+
             if (Status == NV_ENC_ERR_INVALID_ENCODERDEVICE)
             {
                 LastErrorMessage = FString::Printf(TEXT("NVENC runtime rejected the provided DirectX device (NV_ENC_ERR_INVALID_ENCODERDEVICE). (%s)"), *StatusString);
