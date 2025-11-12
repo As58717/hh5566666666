@@ -491,12 +491,14 @@ bool FNVENCSession::Open(ENVENCCodec Codec, void* InDevice, NV_ENC_DEVICE_TYPE I
 
             if (Status == NV_ENC_ERR_INVALID_ENCODERDEVICE)
             {
-                LastErrorMessage = FString::Printf(TEXT("NVENC runtime rejected the provided DirectX device (NV_ENC_ERR_INVALID_ENCODERDEVICE). (%s)"), *StatusString);
+                UE_LOG(LogNVENCSession, Warning,
+                    TEXT("NVENC preset NV_ENC_PRESET_LOW_LATENCY_HQ rejected the provided DirectX device (%s). Will attempt alternate presets during initialisation."),
+                    *StatusString);
+                LastErrorMessage.Reset();
+                return true;
             }
-            else
-            {
-                LastErrorMessage = FString::Printf(TEXT("NvEncGetEncodePresetConfig validation failed: %s"), *StatusString);
-            }
+
+            LastErrorMessage = FString::Printf(TEXT("NvEncGetEncodePresetConfig validation failed: %s"), *StatusString);
 
             UE_LOG(LogNVENCSession, Warning, TEXT("NvEncGetEncodePresetConfig validation failed for NV_ENC_PRESET_LOW_LATENCY_HQ preset: %s"), *StatusString);
             return false;
